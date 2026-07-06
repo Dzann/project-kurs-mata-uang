@@ -1,0 +1,37 @@
+name: Update Currency Data
+
+on:
+  schedule:
+    # Jalan tiap 6 jam. Format cron: menit jam tanggal bulan hari
+    # (waktu di GitHub Actions pakai UTC, bukan WIB)
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    # Supaya bisa di-trigger manual dari tab "Actions" di GitHub, buat testing
+
+permissions:
+  contents: write   # wajib, supaya job ini bisa commit & push balik ke repo
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependency ringan (tanpa Spark)
+        run: |
+          pip install --no-cache-dir requests pandas pyarrow
+
+      - name: Jalankan update data
+        run: python ci_update_data.py
+
+      - name: Commit & push perubahan data
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: auto-update data kurs [skip ci]"
+          file_pattern: "data/output/history/*.parquet data/output/latest/*.parquet"
