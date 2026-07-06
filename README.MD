@@ -1,6 +1,6 @@
 # Dashboard Monitoring & Prediksi Kurs Mata Uang (PySpark Streaming)
 
-Project ini mensimulasikan pipeline **streaming data kurs mata uang** memakai
+Project ini membangun pipeline **streaming data kurs mata uang** memakai
 PySpark Structured Streaming, dengan model ML sederhana untuk prediksi kurs,
 dan dashboard Streamlit sebagai output akhir.
 
@@ -38,6 +38,11 @@ yang tepat untuk menukar uang. Project ini membangun sistem yang:
                   app.py (Streamlit) <-- baca semua folder output di atas
 ```
 
+`fetch_historical.py` dan `ci_update_data.py` adalah jalur tambahan untuk
+mengisi/menyegarkan `data/output/history` dan `data/output/latest` tanpa
+harus menunggu streaming lokal berjalan lama (lihat penjelasan di bagian
+masing-masing di bawah).
+
 ## Isi File
 
 | File | Fungsi |
@@ -45,13 +50,22 @@ yang tepat untuk menukar uang. Project ini membangun sistem yang:
 | `producer.py` | Polling API kurs (Frankfurter/Twelvedata), tulis JSON ke `data/stream_input/` |
 | `spark_streaming_job.py` | Spark Structured Streaming: baca JSON stream, hasilkan history + latest snapshot |
 | `train_model.py` | Batch training model regresi (prediksi rate berikutnya dari data historis) |
+| `fetch_historical.py` | Ambil data historis asli (bukan simulasi) dari Frankfurter untuk mem-bootstrap `data/output/history` supaya training model punya variasi data yang cukup |
+| `ci_update_data.py` | Script ringan (pandas, tanpa Spark) yang dijalankan GitHub Actions secara terjadwal untuk menyegarkan data di deployment publik |
 | `app.py` | Dashboard Streamlit: metric kurs terbaru, grafik tren, grafik prediksi vs aktual |
+| `test_spark.py` | Script kecil untuk memverifikasi instalasi PySpark berjalan benar |
 | `requirements.txt` | Daftar dependency Python |
+| `.github/workflows/update_data.yml` | Workflow GitHub Actions untuk menjalankan `ci_update_data.py` terjadwal |
+| `.gitignore` | Mengecualikan `venv/`, checkpoint, dan file sementara dari git |
 
-## Setup Awal (Windows) - PENTING, lakukan sebelum langkah lain
+---
+
+## Setup Awal (Windows) — lakukan sekali di awal
 
 ### A. Install Python 3.11 dan JDK 17
-- Python 3.11: https://www.python.org/downloads/release/python-3119/ (centang "Add to PATH")
+- Python 3.11: https://www.python.org/downloads/release/python-3119/
+  (saat instalasi, centang **"Add python.exe to PATH"**, dan pastikan opsi
+  **"py launcher"** ikut terinstall)
 - Eclipse Temurin JDK 17: https://adoptium.net
 - Set `JAVA_HOME` di Environment Variables mengarah ke folder install JDK,
   lalu tambahkan `%JAVA_HOME%\bin` ke `Path`
@@ -62,143 +76,93 @@ Tanpa langkah ini, Spark akan gagal memanggil Python worker dengan error
 1. Buka **Settings > Apps > Advanced app settings > App execution aliases**
 2. Matikan toggle untuk `python.exe` dan `python3.exe`
 
-### C. Buat virtual environment & install dependency
-```bash
+### C. Install winutils.exe (dibutuhkan Spark Structured Streaming di Windows)
+1. Download `winutils.exe` dan `hadoop.dll` dari https://github.com/cdarlint/winutils
+   (folder `hadoop-3.3.6/bin`)
+2. Taruh keduanya di `C:\hadoop\bin\`
+3. Copy juga `hadoop.dll` ke `C:\Windows\System32\`
+
+(Script `spark_streaming_job.py` dan `train_model.py` sudah punya fallback
+otomatis untuk `HADOOP_HOME` mengarah ke `C:\hadoop`, jadi tidak perlu set
+Environment Variable manual untuk ini — cukup pastikan filenya ada di path itu.)
+
+### D. Buat virtual environment & install dependency
+```powershell
 py -3.11 -m venv venv
 venv\Scripts\activate
-pip install -r requirements.txt
+python --version
 ```
-Kalau proses ini gagal di tengah jalan (misal error build pandas), jalankan
-lagi `pip install -r requirements.txt` setelah memastikan versi Python 3.11
-terpakai di venv.
+Pastikan output-nya **Python 3.11.x**, baru lanjut:
+```powershell
+pip install --no-cache-dir -r requirements.txt
+```
+Flag `--no-cache-dir` penting untuk menghindari pip memakai wheel cache
+yang salah versi Python.
 
-### D. Pilih interpreter yang benar di VSCode
+### E. Pilih interpreter yang benar di VSCode
 `Ctrl+Shift+P` → **Python: Select Interpreter** → pilih yang path-nya
 `.\venv\Scripts\python.exe`
 
-### E. Tes instalasi Spark
-```bash
+### F. Verifikasi instalasi
+```powershell
+python -c "import numpy; import pandas; import pyarrow; import streamlit; import plotly; import sklearn; print('Semua OK')"
 python test_spark.py
 ```
-Harus muncul tabel kecil tanpa error. Kalau masih ada
-`Python worker failed to connect back`, cek lagi langkah B.
+`test_spark.py` harus menampilkan tabel kecil tanpa error fatal (warning
+soal `winutils`/`ShutdownHookManager` saat proses selesai itu normal dan
+aman diabaikan).
 
-## Cara Menjalankan (Setelah Setup Awal Selesai)
+---
 
-### 1. Setup awal (sekali saja)
-```bash
-python -m venv venv
-venv\Scripts\activate          # Windows
-pip install -r requirements.txt
+## Cara Menjalankan (Lokal)
+
+Butuh beberapa terminal terpisah, semua dengan venv aktif (`venv\Scripts\activate`)
+di folder project yang sama.
+
+**Langkah 1 — Bootstrap data historis (sekali saja, supaya training model punya variasi data)**
+```powershell
+python fetch_historical.py
 ```
 
-### 2. Jalankan pipeline (butuh 3 terminal berbeda, semua di folder project yang sama)
-
-**Terminal 1 — Producer (ambil data dari API)**
-```bash
-venv\Scripts\activate
+**Terminal 1 — Producer (biarkan tetap berjalan)**
+```powershell
 python producer.py
 ```
 
-**Terminal 2 — Spark Streaming Job**
-```bash
-venv\Scripts\activate
+**Terminal 2 — Spark Streaming Job (biarkan tetap berjalan, bersamaan dengan Terminal 1)**
+```powershell
 python spark_streaming_job.py
 ```
 
-Biarkan kedua terminal ini jalan selama beberapa saat (semakin lama, semakin
-banyak data historis yang terkumpul untuk training model & grafik tren).
-
-**Setelah data terkumpul cukup banyak (misal setelah 15-30 menit / puluhan data poin):**
-```bash
-venv\Scripts\activate
+**Terminal 3 — Training Model** (jalankan setelah data cukup, bisa diulang kapan saja untuk retrain)
+```powershell
 python train_model.py
 ```
-Jalankan ini kapan saja untuk retrain model dengan data terbaru.
 
-**Terminal 3 — Dashboard**
-```bash
-venv\Scripts\activate
+**Terminal 4 — Dashboard**
+```powershell
 streamlit run app.py
 ```
 Buka browser ke `http://localhost:8501`
 
-### 3. Deploy (opsional, untuk demo publik)
-Setelah semuanya jalan lancar di lokal, `app.py` bisa di-deploy ke
-**Streamlit Community Cloud** (gratis) dengan meng-push project ke GitHub
-lalu menghubungkannya di https://streamlit.io/cloud.
-Catatan: untuk deploy publik, bagian producer + Spark streaming job perlu
-dijalankan di tempat lain (server/VM) karena Streamlit Cloud hanya meng-host
-aplikasi Streamlit-nya saja, bukan proses background lain.
 
-## Deployment Publik (Opsi B — Semi-Realtime via GitHub Actions)
+## Catatan untuk Laporan/PPT
 
-Supaya dashboard yang di-deploy tetap "hidup" (data terus diperbarui) tanpa
-perlu menjalankan server 24/7, dipakai pendekatan: GitHub Actions
-menjalankan `ci_update_data.py` secara terjadwal, commit hasilnya ke repo,
-lalu Streamlit Cloud otomatis re-deploy dengan data terbaru.
-
-### 1. Push project ke GitHub
-```bash
-git init
-git add .
-git commit -m "Initial commit - project kurs mata uang"
-git branch -M main
-git remote add origin https://github.com/<username>/<nama-repo>.git
-git push -u origin main
-```
-(Buat repo baru dulu di github.com kalau belum ada — boleh public atau private)
-
-### 2. Pastikan struktur ini ikut ter-push
-```
-.github/workflows/update_data.yml   <- workflow terjadwal
-ci_update_data.py                   <- script ringan (pandas, tanpa Spark)
-data/output/history/                <- data historis (hasil fetch_historical.py / streaming lokal)
-data/output/latest/
-app.py
-requirements.txt
-```
-
-### 3. Cek jadwal di `update_data.yml`
-Defaultnya jalan **tiap 6 jam** (`cron: "0 */6 * * *"`, waktu UTC). Sesuaikan
-kalau mau lebih sering/jarang. Catatan: GitHub Actions free tier untuk repo
-public tidak terbatas menit; untuk repo private ada kuota bulanan gratis
-(cukup untuk kebutuhan tugas).
-
-### 4. Tes manual dulu sebelum menunggu jadwal
-Di GitHub: tab **Actions** → pilih workflow **"Update Currency Data"** →
-klik **"Run workflow"** → jalankan manual. Cek apakah muncul commit baru
-otomatis di repo setelah job selesai (biasanya beberapa menit).
-
-### 5. Deploy ke Streamlit Community Cloud
-1. Buka https://share.streamlit.io, login dengan akun GitHub
-2. Klik **"New app"** → pilih repo project ini
-3. Main file path: `app.py`
-4. Klik **Deploy**
-5. Tunggu build selesai, dapat link publik untuk dibagikan ke dosen
-
-Setiap kali GitHub Actions melakukan commit baru (sesuai jadwal), Streamlit
-Cloud akan otomatis mendeteksi perubahan di repo dan re-deploy dengan data
-terbaru — dashboard jadi ter-update berkala tanpa perlu server nyala terus.
-
-### Catatan penting untuk laporan/PPT
-- `ci_update_data.py` sengaja TIDAK memakai Spark (hanya pandas) karena
-  GitHub Actions runner bersifat sementara, tidak cocok untuk proses
-  long-running seperti Spark Structured Streaming.
-- Bukti konsep **streaming** yang sebenarnya tetap di `spark_streaming_job.py`,
-  dijalankan lokal (sertakan screenshot/video singkat sebagai bukti di laporan).
-- Dashboard yang di-deploy publik ini statusnya **semi-realtime** (update
-  berkala tiap beberapa jam via cron), bukan streaming per detik — jelaskan
-  perbedaan ini secara eksplisit supaya penilaian dosen tidak salah paham.
-
-
-
-## Catatan Umum untuk Laporan/PPT
-
-- Jelaskan bahwa "streaming" di sini disimulasikan lewat polling berkala +
-  file source di Spark Structured Streaming, karena API kurs gratis yang
-  dipakai tidak menyediakan data tick-by-tick real-time.
+- "Streaming" pada project ini dibuktikan lewat `spark_streaming_job.py`
+  yang benar-benar memakai Spark Structured Streaming (`readStream`,
+  micro-batch, checkpointing) — sertakan screenshot/video singkat terminal
+  yang menunjukkan batch bertambah (`[Batch 0]`, `[Batch 1]`, dst.) sebagai
+  bukti di laporan.
+- Data sumber (Frankfurter, gratis) update kurs 1x/hari, sehingga sesi
+  streaming singkat akan menghasilkan nilai yang identik antar polling.
+  `fetch_historical.py` dipakai untuk bootstrap data historis asli supaya
+  training model punya variasi nilai yang bermakna.
+- Dashboard yang di-deploy publik (Opsi B) berstatus **semi-realtime**
+  (update berkala tiap beberapa jam via GitHub Actions cron), bukan
+  streaming per detik — jelaskan perbedaan ini secara eksplisit di laporan
+  supaya penilaian dosen tidak salah paham antara "arsitektur streaming
+  yang dibangun" vs "cara data disegarkan di versi yang di-deploy".
 - Model prediksi memakai pendekatan lag features (rate t-1, t-2) dengan
-  Linear Regression sebagai baseline; bisa dikembangkan lebih lanjut ke
-  model time-series yang lebih canggih (ARIMA, LSTM, dst.) sebagai bagian
-  dari saran pengembangan di kesimpulan.
+  Linear Regression sebagai baseline; bisa disebut sebagai saran
+  pengembangan lanjutan ke model time-series yang lebih canggih
+  (ARIMA, LSTM, dst.) di bagian kesimpulan.
