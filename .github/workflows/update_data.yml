@@ -2,9 +2,15 @@ name: Update Currency Data
 
 on:
   schedule:
-    # Jalan tiap 6 jam. Format cron: menit jam tanggal bulan hari
-    # (waktu di GitHub Actions pakai UTC, bukan WIB)
-    - cron: "0 */6 * * *"
+    # Frankfurter/ECB update kurs sekitar jam 16:00 CET/CEST.
+    # GitHub Actions cron selalu pakai UTC, dan CET berubah offset saat
+    # daylight saving time, jadi disiapkan 2 jadwal (+30 menit buffer):
+    #   - 14:30 UTC -> 16:30 CEST (musim panas, sekitar Maret-Oktober)
+    #   - 15:30 UTC -> 16:30 CET  (musim dingin, sekitar Oktober-Maret)
+    # Salah satunya akan jadi "run tambahan" tergantung musim yang sedang
+    # berlaku - tidak masalah, cuma re-fetch data yang sama, tidak merusak apapun.
+    - cron: "30 14 * * *"
+    - cron: "30 15 * * *"
   workflow_dispatch:
     # Supaya bisa di-trigger manual dari tab "Actions" di GitHub, buat testing
 
